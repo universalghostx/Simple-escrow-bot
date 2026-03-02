@@ -1,89 +1,40 @@
-import requests
-import sqlite3
-import asyncio
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import os
+import json
+import logging
+from telebot import TeleBot, types
 
-TOKEN = "8598041576:AAGvH_jizzssSSB1folNLyLUqCe8AxqDRCw"
-WALLET = "TRuHXCeJXJ9L8temLhLzdeXwruRuV3HHtR"
-API_KEY = "85b61665-8690-466f-8128-60bd27e8d2e2"
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Database
-conn = sqlite3.connect("escrow.db", check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS escrows (
-    id TEXT,
-    buyer_id INTEGER,
-    seller TEXT,
-    amount REAL,
-    paid INTEGER DEFAULT 0
-)
-""")
-conn.commit()
+# Load config.json if present
+CONFIG_FILE = "config.json"
+if os.path.exists(CONFIG_FILE):
+    with open(CONFIG_FILE) as f:
+        config = json.load(f)
+else:
+    config = {}
 
-def generate_id():
-    import random
-    return str(random.randint(10000, 99999))
+TOKEN = config.get("token", os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_TOKEN_HERE"))
+WALLET = config.get("wallet", os.environ.get("WALLET", "YOUR_WALLET_HERE"))
 
-async def create(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        seller = context.args[0]
-        amount = float(context.args[1])
-    except:
-        await update.message.reply_text("Usage: /create @seller amount")
-        return
+if not TOKEN or not WALLET:
+    logger.error("Please set token and wallet in config.json or environment variables.")
+    exit(1)
 
-    escrow_id = generate_id()
-    cursor.execute("INSERT INTO escrows VALUES (?, ?, ?, ?, 0)",
-                   (escrow_id, update.effective_user.id, seller, amount))
-    conn.commit()
+bot = TeleBot(TOKEN)
 
-    await update.message.reply_text(
-        f"Escrow ID: {escrow_id}\n"
-        f"Send EXACT {amount} USDT (TRC20) to:\n{WALLET}"
-    )
+@bot.message_handler(commands=['start'])
+def start(message: types.Message):
+    bot.reply_to(message, f"Hello {message.from_user.first_name}! Wallet: {WALLET}")
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    escrow_id = context.args[0]
-    cursor.execute("SELECT * FROM escrows WHERE id=?", (escrow_id,))
-    escrow = cursor.fetchone()
+@bot.message_handler(commands=['wallet'])
+def show_wallet(message: types.Message):
+    bot.reply_to(message, f"Your wallet: {WALLET}")
 
-    if escrow:
-        paid = "YES" if escrow[4] else "NO"
-        await update.message.reply_text(
-            f"Escrow {escrow_id}\nPaid: {paid}"
-        )
-    else:
-        await update.message.reply_text("Escrow not found.")
+@bot.message_handler(func=lambda m: True)
+def echo(message: types.Message):
+    bot.reply_to(message, f"You said: {message.text}")
 
-async def check_payments(app):
-    while True:
-        url = f"https://api.trongrid.io/v1/accounts/{WALLET}/transactions/trc20"
-        headers = {"TRON-PRO-API-KEY": API_KEY}
-        r = requests.get(url, headers=headers)
-        data = r.json()
-
-        for tx in data.get("data", []):
-            amount = int(tx["value"]) / 1_000_000
-            cursor.execute("SELECT id FROM escrows WHERE amount=? AND paid=0", (amount,))
-            escrow = cursor.fetchone()
-
-            if escrow:
-                cursor.execute("UPDATE escrows SET paid=1 WHERE id=?", (escrow[0],))
-                conn.commit()
-
-        await asyncio.sleep(30)
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Simple Escrow Bot Ready.")
-
-app = ApplicationBuilder().token(TOKEN).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("create", create))
-app.add_handler(CommandHandler("status", status))
-
-app.job_queue.run_once(lambda ctx: asyncio.create_task(check_payments(app)), 1)
-
-app.run_polling()
+if __name__ == "__main__":
+    logger.info("Bot starting...")
+    bot.infinity_polling()
